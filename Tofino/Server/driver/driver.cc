@@ -1,0 +1,218 @@
+#include "driver.h"
+#include <bits/stdint-uintn.h>
+#include <iostream>
+
+using namespace std;
+
+int dpdk_driver::port_init(uint16_t port, uint16_t rx_rings,
+                           uint16_t tx_rings) {
+  struct rte_eth_conf port_conf;
+  uint16_t nb_rxd = RX_RING_SIZE;
+  uint16_t nb_txd = TX_RING_SIZE;
+  int retval;
+  uint16_t q;
+  struct rte_eth_dev_info dev_info;
+  struct rte_eth_txconf txconf;
+
+  if (!rte_eth_dev_is_valid_port(port))
+    return -1;
+
+  memset(&port_conf, 0, sizeof(struct rte_eth_conf));
+  rte_eth_dev_info_get(port, &dev_info);
+
+  if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+    port_conf.txmode.offloads |= DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+
+  retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
+
+  if (retval != 0)
+    return retval;
+
+  retval = rte_eth_dev_adjust_nb_rx_tx_desc(port, &nb_rxd, &nb_txd);
+
+  if (retval != 0)
+    return retval;
+
+  for (q = 0; q < rx_rings; q++) {
+    retval = rte_eth_rx_queue_setup(
+        port, q, nb_rxd, rte_eth_dev_socket_id(port), NULL, mbuf_pool);
+    if (retval < 0)
+      return retval;
+  }
+
+  txconf = dev_info.default_txconf;
+  txconf.offloads = port_conf.txmode.offloads;
+  for (q = 0; q < tx_rings; q++) {
+    retval = rte_eth_tx_queue_setup(port, q, nb_txd,
+                                    rte_eth_dev_socket_id(port), &txconf);
+    if (retval < 0)
+      return retval;
+  }
+
+  retval = rte_eth_dev_start(port);
+  if (retval < 0)
+    return retval;
+
+  struct rte_ether_addr addr;
+  rte_eth_macaddr_get(port, &addr);
+  printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8
+         " %02" PRIx8 " %02" PRIx8 "\n",
+         port, addr.addr_bytes[0], addr.addr_bytes[1], addr.addr_bytes[2],
+         addr.addr_bytes[3], addr.addr_bytes[4], addr.addr_bytes[5]);
+
+  rte_eth_promiscuous_enable(port);
+
+  return 0;
+}
+
+void dpdk_driver::send_pkt(char *context, unsigned nb_bytes) {
+  uint16_t port = 0;
+
+  struct rte_mbuf *mbuf;
+
+  struct rte_ether_hdr  *hdr_eth;
+  struct rte_ipv4_hdr  *hdr_ip;
+  struct rte_udp_hdr  *hdr_udp;
+
+  mbuf = rte_pktmbuf_alloc(mbuf_pool);
+
+  char *payload = rte_pktmbuf_append(mbuf, nb_bytes);
+  if (payload == NULL) {
+    rte_exit(EXIT_FAILURE, "Error with rte_pktmbuf_append\n");
+  }
+
+  rte_memcpy(payload, context, nb_bytes);
+
+  hdr_udp = (struct rte_udp_hdr  *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_udp_hdr ));
+  hdr_udp->src_port = 0;
+  hdr_udp->dst_port = 0;
+  hdr_udp->dgram_len = htons(nb_bytes + sizeof(struct rte_udp_hdr));
+  hdr_udp->dgram_cksum = 0;
+
+  hdr_ip =
+      (struct rte_ipv4_hdr *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ipv4_hdr));
+  hdr_ip->version_ihl = 0x45;
+  hdr_ip->type_of_service = 0;
+  hdr_ip->total_length =
+      htons(nb_bytes + sizeof(struct rte_udp_hdr) + sizeof(struct rte_ipv4_hdr));
+  hdr_ip->packet_id = 0;
+  hdr_ip->fragment_offset = 0;
+  hdr_ip->time_to_live = 64;
+  hdr_ip->next_proto_id = IPPROTO_UDP;
+  hdr_ip->hdr_checksum = 0;
+  hdr_ip->src_addr = 0;
+  hdr_ip->dst_addr = 0;
+
+  hdr_eth =
+      (struct rte_ether_hdr  *)rte_pktmbuf_prepend(mbuf, sizeof(struct rte_ether_hdr ));
+  memset(&hdr_eth->s_addr, 0x0, RTE_ETHER_ADDR_LEN);
+  memset(&hdr_eth->d_addr, 0x0, RTE_ETHER_ADDR_LEN);
+  hdr_eth->ether_type = htons(RTE_ETHER_TYPE_IPV4);
+
+  hdr_udp->dgram_cksum = rte_ipv4_udptcp_cksum(hdr_ip, hdr_udp);
+  hdr_ip->hdr_checksum = rte_ipv4_cksum(hdr_ip);
+
+  // cout << "try to burst" << endl;
+  uint16_t nb_tx = rte_eth_tx_burst(port, 0, &mbuf, 1);
+
+  if (unlikely(nb_tx < 1)) {
+    rte_pktmbuf_free(mbuf);
+  }
+}
+
+void dpdk_driver::recv_pkt(char *context, unsigned nb_bytes, uint16_t & payload_len) {
+  uint16_t port = 0;
+  unsigned nb_rx_pkt;
+
+  struct rte_mbuf  *mbuf,*mbufs[BURST_SIZE];
+
+  struct rte_ether_hdr  *hdr_eth;
+  struct rte_ipv4_hdr  *hdr_ip;
+  struct rte_udp_hdr  *hdr_udp;
+
+  if (recv_queue.empty()) {
+    /* Send burst of TX packets, to second port of pair. */
+    uint16_t nb_rx;
+
+    /* Free any unsent packets. */
+    do {
+      nb_rx = rte_eth_rx_burst(port, 0, mbufs, 4);
+    } while (unlikely(nb_rx < 1));
+
+    for (int buf = 0; buf < nb_rx; buf++) {
+      recv_queue.push(mbufs[buf]);
+    }
+  }
+
+  mbuf = recv_queue.front();
+  recv_queue.pop();
+
+  hdr_eth = rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr  *);
+
+  hdr_ip = (struct rte_ipv4_hdr  *)(hdr_eth + 1);
+
+  hdr_udp = (struct rte_udp_hdr  *)(hdr_ip + 1);
+
+  char *payload = (char *)(hdr_udp + 1);
+
+  payload_len = htons(hdr_udp->dgram_len)-sizeof(struct rte_udp_hdr);
+
+  rte_memcpy(context, payload, nb_bytes);
+
+  rte_pktmbuf_free(mbuf);
+}
+
+
+int dpdk_driver::init(int argc, char *argv[]) {
+  unsigned nb_ports;
+
+  int ret = rte_eal_init(argc, argv);
+  if (ret < 0)
+    rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
+
+  argc -= ret;
+  argv += ret;
+
+  nb_ports = rte_eth_dev_count_avail();
+
+  if (nb_ports < 1)
+    rte_exit(EXIT_FAILURE, "Error: number of ports must be greater than one\n");
+
+  mbuf_pool =
+      rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS, MBUF_CACHE_SIZE, 0,
+                              RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+
+  if (mbuf_pool == NULL)
+    rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
+
+  if (port_init(0, 1, 1) != 0)
+    rte_exit(EXIT_FAILURE, "Cannot init port\n");
+
+  return ret;
+}
+
+unsigned inject_flag_hdr(char *msg, uint8_t mac_addr[], char *flow_key, unsigned flow_len) {
+  unsigned msg_len = 0;
+
+  //mac addr
+  memcpy(msg + msg_len, mac_addr, 6 * sizeof(char));
+  msg_len += 6 * sizeof(char);
+
+  //srcip, dstip, srcport, dst_port
+  memcpy(msg + msg_len, flow_key, 12 * sizeof(char));
+  msg_len += 12 * sizeof(char);
+
+  //pkt_flag 2B
+  memset(msg + msg_len, 0xff, sizeof(uint16_t));
+  msg_len += sizeof(uint16_t);
+
+  //table_flag + zero
+  memset(msg + msg_len, 0x0, sizeof(uint16_t));
+  msg_len += sizeof(uint16_t);
+
+  //result 
+  memset(msg + msg_len, 0x0, sizeof(uint32_t));
+  msg_len += sizeof(uint32_t);
+
+  return msg_len;
+}

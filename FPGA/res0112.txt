@@ -1,0 +1,23 @@
+device:
+Virtex ultrascale+, xcvu7p-flvc2014-2-e
+timing:
+200Mhz，worst negative slack: 2.389 ns --> shortest cycle duration is (5 - 2.389) ns。
+resource utilization:
+LUT 1038056 / 788160 131.71%
+LUTRAM 9024 / 394560 2.29%
+FF 1017452 / 1576320 64.55%
+BRAM 1024 / 1440 71.11%
+IO 272/416 65.38%
+
+
+
+device:
+Virtex ultrascale+, xcvu11p-flga2577-3-e
+timing:
+200Mhz，worst negative slack: 2.623 ns --> shortest cycle duration is (5 - 2.623) ns。
+resource utilization:
+LUT 1038056 / 1296000 80.1%
+LUTRAM 9024 / 593280 1.52%
+FF 1017452 / 2592000 39.25%
+BRAM 1024 / 2016 50.79%
+IO 272/448 60.71%

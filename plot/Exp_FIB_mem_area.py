@@ -27,7 +27,7 @@ plt.tick_params(labelsize=19)
 ax1 = plt.gca()
 
 # 绘制柱状图
-plt.bar(x_a, ut, width=bar_width, label=r'UnifiedTable', color='#2e75b6', alpha=1, edgecolor='black', linewidth=2)
+plt.bar(x_a, ut, width=bar_width, label=r'ElasticTable', color='#2e75b6', alpha=1, edgecolor='black', linewidth=2)
 plt.bar(x_b, cf, width=bar_width, label=r'SAIL', color='#ed7d31', alpha=1, edgecolor='black', linewidth=2)
 plt.bar(x_c, ch, width=bar_width, label=r'PBF', color='#70ad47', alpha=1, edgecolor='black', linewidth=2)
 

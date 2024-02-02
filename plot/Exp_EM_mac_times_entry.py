@@ -29,7 +29,7 @@ plt.bar(x_a, ut, width=bar_width, label=r'ElasticTable', color='#2e75b6', alpha=
 plt.bar(x_b, cf, width=bar_width, label=r'CuckooFilter', color='#ed7d31', alpha=1, edgecolor='black', linewidth=2)
 plt.bar(x_c, ch, width=bar_width, label=r'BasicHash', color='#70ad47', alpha=1, edgecolor='black', linewidth=2)
 
-plt.xlabel('Conflict Time', fontweight='bold', fontsize=20)
+plt.xlabel('Failure Count', fontweight='bold', fontsize=20)
 plt.ylabel('Entries', fontweight='bold', fontsize=20)
 
 # 设置图例
